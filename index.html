@@ -299,22 +299,66 @@
     return uniq((text.match(/[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g) || []));
   }
 
-  function extractWords(text){
-    // 用瀏覽器內建中文分詞（Chrome / Android WebView 支援）
-    let segs = [];
+  // ── 中文詞語詞典（正向最大匹配）────────────────────────────
+  // 唔靠 Intl.Segmenter，因為 Safari / 舊 Android WebView 冇中文詞典，
+  // 會逐個字切開，結果詞語模式抽出嚟全部係單字。
+  const CJK_RUN = /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+/g;
+  const STRIP_NON_CJK = /[^\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/g;
+  let WORDDICT = null, DICT_MAXLEN = 4, dictPromise = null;
+
+  function loadDict(){
+    if(dictPromise) return dictPromise;
+    dictPromise = fetch('dict.txt')
+      .then(r => { if(!r.ok) throw new Error('dict ' + r.status); return r.text(); })
+      .then(txt => {
+        const s = new Set(); let mx = 2;
+        txt.split('\n').forEach(w => {
+          w = w.trim();
+          if(w.length >= 2){ s.add(w); if(w.length > mx) mx = w.length; }
+        });
+        WORDDICT = s; DICT_MAXLEN = Math.min(mx, 6);
+        return s;
+      })
+      .catch(() => { WORDDICT = new Set(); return WORDDICT; });
+    return dictPromise;
+  }
+
+  // 正向最大匹配：由左至右，每次試最長嘅詞
+  function fmmSegment(text){
+    const out = [];
+    (text.match(CJK_RUN) || []).forEach(run => {
+      let i = 0;
+      while(i < run.length){
+        let hit = '';
+        const maxL = Math.min(DICT_MAXLEN, run.length - i);
+        for(let L = maxL; L >= 2; L--){
+          const cand = run.substr(i, L);
+          if(WORDDICT.has(cand)){ hit = cand; break; }
+        }
+        if(hit){ out.push(hit); i += hit.length; }
+        else i += 1;
+      }
+    });
+    return out;
+  }
+
+  // 瀏覽器內建分詞（Chrome 系有中文詞典，Safari 可能冇）—— 只做後備
+  function segSegmenter(text){
     try{
       const seg = new Intl.Segmenter('zh-Hant', {granularity:'word'});
-      segs = [...seg.segment(text)].filter(s => s.isWordLike).map(s => s.segment);
-    }catch(e){
-      segs = [];
-    }
-    segs = segs.map(s => s.replace(/[\s，。、；：！？「」『』（）()《》〈〉…—·,.;:!?"']/g,'')).filter(Boolean);
-    // 主要取 2 字以上詞語；如果太少，補回單字
-    let words = uniq(segs.filter(s => s.length >= 2));
-    if(words.length < 3){
-      words = uniq(segs.filter(s => s.length >= 1));
-    }
-    return words;
+      return [...seg.segment(text)]
+        .filter(s => s.isWordLike)
+        .map(s => s.segment.replace(STRIP_NON_CJK, ''))
+        .filter(s => s.length >= 2);
+    }catch(e){ return []; }
+  }
+
+  function extractWords(text){
+    const a = fmmSegment(text || '');
+    if(a.length >= 3) return uniq(a);
+    const b = segSegmenter(text || '');
+    if(b.length >= 3) return uniq(b);
+    return uniq([...a, ...b]);
   }
 
   function extractSentences(text){
@@ -326,16 +370,32 @@
     );
   }
 
-  function extract(){
+  async function extract(){
     const t = $('rawText').value.trim();
     S.raw = t; localStorage.setItem('dictRaw', t);
     if(!t){ renderChips([]); return; }
     let list = [];
-    if(S.mode === 'char') list = extractChars(t);
-    else if(S.mode === 'word') list = extractWords(t);
-    else list = extractSentences(t);
+    if(S.mode === 'char'){
+      list = extractChars(t);
+    }else if(S.mode === 'word'){
+      if(!WORDDICT){
+        const btn = $('extractBtn'); const old = btn.textContent;
+        btn.disabled = true; btn.textContent = '分析中…';
+        try{ await loadDict(); }finally{ btn.disabled = false; btn.textContent = old; }
+      }
+      list = extractWords(t);
+    }else{
+      list = extractSentences(t);
+    }
     S.items = list;
     renderChips(list);
+  }
+
+  function emptyHint(){
+    if(!$('rawText').value.trim()) return '先貼上默書內容，再撳「抽取題目」。';
+    if(S.mode === 'word') return '搵唔到詞語（詞語要兩個字以上）。試吓「單字」模式，或者喺下面自己加題目。';
+    if(S.mode === 'char') return '搵唔到中文字。檢查吓係咪貼咗啲拼音或者英文。';
+    return '搵唔到句子。試吓用句號或換行分開每一句。';
   }
 
   function renderChips(list){
@@ -343,6 +403,7 @@
     box.innerHTML = '';
     cnt.textContent = list.length ? '(' + list.length + ')' : '';
     empty.style.display = list.length ? 'none' : 'block';
+    if(!list.length) empty.textContent = emptyHint();
     $('startBtn').disabled = list.length === 0;
 
     list.forEach((w, idx) => {
@@ -711,6 +772,10 @@
     $('voiceSel').innerHTML = '<option>（瀏覽器唔支援語音）</option>';
   }
   if(S.raw) extract();
+
+  // 預先載入詞典，等家長撳「抽取題目」時唔使等
+  if(S.mode === 'word') setTimeout(loadDict, 300);
+  else setTimeout(loadDict, 1500);
 
   if('serviceWorker' in navigator && location.protocol.startsWith('http')){
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(()=>{}));

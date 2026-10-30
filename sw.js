@@ -1,8 +1,9 @@
 /* 默書 Dojo service worker — 離線可用 */
-const VERSION = 'dict-v1';
+const VERSION = 'dict-v2';
 const SHELL = [
   './',
   './index.html',
+  './dict.txt',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',
