@@ -1,5 +1,5 @@
 /* 默書 Dojo service worker — 離線可用 */
-const VERSION = 'dict-v3';
+const VERSION = 'dict-v4';
 const SHELL = [
   './',
   './index.html',

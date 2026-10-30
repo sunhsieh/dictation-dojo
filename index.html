@@ -20,6 +20,7 @@
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
   html,body{margin:0; padding:0;}
+  html{scrollbar-gutter:stable;}
   body{
     font-family:"Noto Sans TC",-apple-system,"PingFang HK","Microsoft JhengHei",sans-serif;
     background:var(--washi); color:var(--ink); min-height:100vh;
@@ -91,7 +92,7 @@
   .cnt{font-size:13px; color:var(--vermilion); font-weight:700;}
 
   .paper-wrap{position:relative; margin-top:10px;}
-  canvas#paper{width:100%; height:clamp(220px,42vh,340px); display:block; border-radius:14px;
+  canvas#paper{width:100%; height:190px; display:block; border-radius:14px;
     background:#fffefb; border:1.5px solid var(--line); touch-action:none; cursor:crosshair;}
 
   .writebar{display:flex; gap:8px; margin-top:10px;}
@@ -251,7 +252,7 @@
         <button class="speakbtn" id="speakBtn" title="再聽一次">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4.03v8.05A4.5 4.5 0 0 0 16.5 12zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
         </button>
-        <div class="hint">聽清楚 → 寫落格 → 撳「睇答案」自己對</div>
+        <div class="hint">聽清楚 → 每格寫一個字 → 撳「睇答案」自己對</div>
         <div class="cnt" id="charCount"></div>
       </div>
 
@@ -546,21 +547,35 @@
   const paper = $('paper');
   let ctx = null, strokes = [], cur = null, drawing = false, dpr = 1;
 
+  // 依題目字數自動排格：每格盡量大，唔會剩一大片空白
+  let layout = { cols:1, rows:1, cell:180, w:320, h:190 };
+
+  function computeLayout(){
+    const wrap = paper.parentElement;
+    const availW = Math.max(180, Math.round(wrap ? wrap.clientWidth : 320));
+    const len = Math.max(1, (currentText || '').length);
+    // 每格最少想有 ~88px 闊，唔夠就開新一行
+    const perRow = Math.max(1, Math.floor((availW - 12) / 88));
+    const cols = Math.max(1, Math.min(len, perRow));
+    const rows = Math.ceil(len / cols);
+    const maxH = Math.max(170, Math.min(window.innerHeight - 430, 520));
+    let cell = Math.min((availW - 12) / cols, (maxH - 12) / rows, 190);
+    cell = Math.max(36, Math.floor(cell));
+    return { cols, rows, cell, w: availW, h: cell * rows + 12 };
+  }
+
   function fitCanvas(){
-    const r = paper.getBoundingClientRect();
+    layout = computeLayout();
     dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-    paper.width = Math.round(r.width * dpr);
-    paper.height = Math.round(r.height * dpr);
+    paper.style.height = layout.h + 'px';
+    paper.width = Math.round(layout.w * dpr);
+    paper.height = Math.round(layout.h * dpr);
     ctx = paper.getContext('2d');
     redraw();
   }
 
   function gridSpec(){
-    const w = paper.width / dpr, h = paper.height / dpr;
-    const len = Math.max(1, (currentText || '').length);
-    const cols = Math.min(len, len > 8 ? 8 : len);
-    const rows = Math.ceil(len / cols);
-    const cell = Math.min((w - 36) / cols, (h - 30) / rows) * 0.94;
+    const { cols, rows, cell, w, h } = layout;
     const gw = cell * cols, gh = cell * rows;
     return { x: (w - gw) / 2, y: (h - gh) / 2, cell, cols, rows, w, h };
   }
@@ -671,7 +686,7 @@
     $('progress').textContent = (S.i + 1) + ' / ' + S.queue.length;
     $('barFill').style.width = (S.i / S.queue.length * 100) + '%';
     updateStats();
-    redraw();
+    fitCanvas();          // 每題唔同字數，重新排版
     setTimeout(() => { if(!S.revealed) speak(currentText, S.rep); }, 220);
   }
 
@@ -697,14 +712,14 @@
   // 之後可以喺任何尺寸重畫，而且 localStorage 用得少位。
   function captureAnswer(ok){
     let s = [];
+    const g = gridSpec();
     if(strokes.length){
-      const g = gridSpec();
       s = strokes.map(st => st.map(p => [
         Math.round((p[0] - g.x) / g.cell * 1000),
         Math.round((p[1] - g.y) / g.cell * 1000)
       ]));
     }
-    S.answers.push({ t: currentText, ok: ok ? 1 : 0, s });
+    S.answers.push({ t: currentText, ok: ok ? 1 : 0, s, c: g.cols });
     saveAnswers();
   }
 
@@ -730,7 +745,8 @@
 
   function drawInk(cv, item){
     const len = Math.max(1, (item.t || '').length);
-    const cols = Math.min(len, len > 8 ? 8 : len);
+    // 用寫嗰時嘅欄數，唔可以重算，否則筆跡會對唔返格
+    const cols = Math.max(1, Math.min(item.c || len, len));
     const rows = Math.ceil(len / cols);
     const avail = Math.max(84, (cv.parentElement ? cv.parentElement.clientWidth : 110) - 12);
     const cell = Math.min(avail / cols, len > 4 ? 96 : 78);
@@ -839,7 +855,7 @@
     if(!S.revealed) reveal();
     if(S.answered) return;
     S.answered = true;
-    captureAnswer(ok);
+    try{ captureAnswer(ok); }catch(e){ /* 儲筆跡失敗都唔可以卡住默書流程 */ }
     if(ok) S.stats.ok++;
     else { S.stats.no++; S.wrong.push(currentText); }
     S.i++;
